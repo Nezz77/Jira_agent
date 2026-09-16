@@ -123,6 +123,17 @@ Examples:
     )
 
     parser.add_argument(
+        "--sprints",
+        type=int,
+        default=1,
+        metavar="N",
+        help=(
+            "Number of sprints to create on the Jira board (default: 1). "
+            "Stories will be distributed evenly across all sprints."
+        ),
+    )
+
+    parser.add_argument(
         "--modules-out",
         default="modules.txt",
         metavar="PATH",
@@ -197,6 +208,47 @@ def load_and_validate_env(args: argparse.Namespace) -> dict:
     }
 
     return config
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Interactive Helpers
+# ══════════════════════════════════════════════════════════════════════════════
+
+def collect_members_interactively() -> list[str]:
+    """
+    Prompt the user to enter team member names one by one in the terminal.
+    Called when --members is not provided and stdin is a TTY (interactive mode).
+
+    Returns an empty list if the user skips (presses Enter with no input first).
+    """
+    from rich.prompt import Prompt
+
+    console.print(
+        "\n  [bold yellow]No team members specified.[/bold yellow]\n"
+        "  Enter team member names one per line.\n"
+        "  Press [bold]Enter[/bold] on a blank line when done, "
+        "or type [bold]skip[/bold] to leave issues unassigned.\n"
+    )
+
+    members: list[str] = []
+    index = 1
+    while True:
+        name = Prompt.ask(f"  Member {index}", default="").strip()
+        if name.lower() in ("", "skip", "done", "q"):
+            break
+        members.append(name)
+        index += 1
+
+    if members:
+        console.print(
+            f"\n  [green]✓[/green] Team members: [bold]{', '.join(members)}[/bold] "
+            f"({len(members)} members)\n"
+        )
+    else:
+        console.print(
+            "  [yellow]⚠[/yellow] No members entered — issues will be unassigned.\n"
+        )
+    return members
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -279,6 +331,10 @@ def main() -> None:
     if args.members.strip():
         members = [m.strip() for m in args.members.split(",") if m.strip()]
 
+    # If no members provided and we're in an interactive terminal, prompt for them
+    if not members and sys.stdin.isatty():
+        members = collect_members_interactively()
+
     if not members:
         console.print(
             "  [yellow]⚠[/yellow] No team members specified (--members). "
@@ -291,6 +347,7 @@ def main() -> None:
         )
 
     skip_stage = args.skip_stage or 0
+    num_sprints = max(1, args.sprints)
     start_time = time.time()
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -338,6 +395,7 @@ def main() -> None:
                 gemini_api_key=config["gemini_api_key"],
                 gemini_model_name=config["gemini_model"],
                 backlog_output_path=args.backlog_out,
+                num_sprints=num_sprints,
             )
         except ValueError as exc:
             fatal(f"Agile decomposition failed (JSON parse error): {exc}")
@@ -362,6 +420,7 @@ def main() -> None:
             jira_project_name=config["jira_project_name"],
             members=members,
             dry_run=args.dry_run,
+            num_sprints=num_sprints,
         )
     except RuntimeError as exc:
         fatal(f"Jira board creation failed: {exc}")

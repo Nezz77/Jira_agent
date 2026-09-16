@@ -23,6 +23,7 @@ import logging
 import time
 from typing import Optional
 
+import requests
 from jira import JIRA, JIRAError
 
 from utils import console, make_retry_decorator, print_banner, print_summary_table
@@ -318,6 +319,111 @@ def _create_subtask(
 _RATE_LIMIT_SLEEP = 0.35  # seconds between Jira API write calls (~170 calls/min)
 
 
+# ── Sprint Management ─────────────────────────────────────────────────────────
+
+def create_sprints(
+    jira: JIRA,
+    jira_domain: str,
+    jira_email: str,
+    jira_api_token: str,
+    project_key: str,
+    num_sprints: int,
+) -> dict[int, int]:
+    """
+    Create `num_sprints` sprints on the project's Scrum board via the Agile REST API.
+
+    Returns:
+        Dict mapping sprint_number (1-based) -> Jira sprint ID.
+        Returns an empty dict if no board is found or sprint creation fails.
+    """
+    if num_sprints <= 0:
+        return {}
+
+    base_url = f"https://{jira_domain}" if not jira_domain.startswith("http") else jira_domain
+    auth = (jira_email, jira_api_token)
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+
+    # 1. Find the board ID for this project
+    boards_url = f"{base_url}/rest/agile/1.0/board"
+    try:
+        resp = requests.get(
+            boards_url,
+            params={"projectKeyOrId": project_key, "type": "scrum"},
+            auth=auth,
+            headers=headers,
+            timeout=15,
+        )
+        resp.raise_for_status()
+        boards = resp.json().get("values", [])
+    except Exception as exc:
+        logger.warning("Could not fetch boards for project %s: %s", project_key, exc)
+        return {}
+
+    if not boards:
+        logger.warning(
+            "No Scrum board found for project '%s' — sprints will not be created. "
+            "Ensure the project has a Scrum board.",
+            project_key,
+        )
+        return {}
+
+    board_id = boards[0]["id"]
+    logger.info("Found board ID %s for project %s", board_id, project_key)
+
+    # 2. Create each sprint
+    sprint_map: dict[int, int] = {}
+    sprints_url = f"{base_url}/rest/agile/1.0/sprint"
+
+    for sprint_num in range(1, num_sprints + 1):
+        try:
+            resp = requests.post(
+                sprints_url,
+                json={"name": f"Sprint {sprint_num}", "originBoardId": board_id},
+                auth=auth,
+                headers=headers,
+                timeout=15,
+            )
+            resp.raise_for_status()
+            sprint_id = resp.json()["id"]
+            sprint_map[sprint_num] = sprint_id
+            logger.info("Created Sprint %d (ID: %s)", sprint_num, sprint_id)
+            console.print(
+                f"  [green]✓[/green] Sprint [bold]{sprint_num}[/bold] created (ID: {sprint_id})"
+            )
+            time.sleep(_RATE_LIMIT_SLEEP)
+        except Exception as exc:
+            logger.warning("Failed to create Sprint %d: %s", sprint_num, exc)
+
+    return sprint_map
+
+
+def _move_issue_to_sprint(
+    jira_domain: str,
+    jira_email: str,
+    jira_api_token: str,
+    sprint_id: int,
+    issue_key: str,
+) -> None:
+    """
+    Move a Jira issue into a sprint using the Agile REST API.
+    Silently logs a warning on failure (sprint assignment is non-critical).
+    """
+    base_url = f"https://{jira_domain}" if not jira_domain.startswith("http") else jira_domain
+    url = f"{base_url}/rest/agile/1.0/sprint/{sprint_id}/issue"
+    try:
+        resp = requests.post(
+            url,
+            json={"issues": [issue_key]},
+            auth=(jira_email, jira_api_token),
+            headers={"Content-Type": "application/json"},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        logger.debug("Moved %s to sprint %s", issue_key, sprint_id)
+    except Exception as exc:
+        logger.warning("Could not move %s to sprint %s: %s", issue_key, sprint_id, exc)
+
+
 # ── Main Builder ──────────────────────────────────────────────────────────────
 
 def build_jira_board(
@@ -329,9 +435,10 @@ def build_jira_board(
     jira_project_name: str,
     members: list[str],
     dry_run: bool = False,
+    num_sprints: int = 1,
 ) -> list[dict]:
     """
-    Full Stage 3 pipeline: authenticate → ensure project → create issues.
+    Full Stage 3 pipeline: authenticate → ensure project → create sprints → create issues.
 
     Args:
         backlog:           Validated backlog from Stage 2.
@@ -342,9 +449,10 @@ def build_jira_board(
         jira_project_name: Human-readable project name.
         members:           Team member names (used for account ID resolution).
         dry_run:           If True, print what would be created without calling Jira.
+        num_sprints:       Number of sprints to create on the board.
 
     Returns:
-        List of row dicts for the summary table (type, key, summary, assignee).
+        List of row dicts for the summary table (type, key, summary, assignee, sprint).
     """
     print_banner(
         "Stage 3 — Building Jira Board",
@@ -367,6 +475,14 @@ def build_jira_board(
     # ── Ensure project exists ─────────────────────────────────────────────────
     with console.status("[bold green]Checking Jira project…"):
         ensure_project_exists(jira, jira_project_key, jira_project_name)
+
+    # ── Create sprints ────────────────────────────────────────────────────────
+    sprint_map: dict[int, int] = {}
+    if num_sprints >= 1:
+        console.print(f"\n  Creating [bold]{num_sprints}[/bold] sprint(s) on the board…")
+        sprint_map = create_sprints(
+            jira, jira_domain, jira_email, jira_api_token, jira_project_key, num_sprints
+        )
 
     # ── Resolve account IDs ───────────────────────────────────────────────────
     account_map: dict[str, Optional[str]] = {}
@@ -426,16 +542,24 @@ def build_jira_board(
 
             time.sleep(_RATE_LIMIT_SLEEP)
 
+            # ── Assign story to its sprint ──────────────────────────────────────
+            story_sprint_num = story.get("sprint", 1)
+            sprint_id = sprint_map.get(story_sprint_num)
+            if sprint_id:
+                _move_issue_to_sprint(jira_domain, jira_email, jira_api_token, sprint_id, story_key)
+                time.sleep(_RATE_LIMIT_SLEEP)
+
             created_issues.append({
                 "type": "Story",
                 "key": story_key,
                 "summary": story_title[:60],
                 "assignee": story_assignee_name,
+                "sprint": story_sprint_num,
             })
 
             console.print(
                 f"    [green]↳[/green] Story [bold]{story_key}[/bold] "
-                f"({story_points} pts) → {story_assignee_name}"
+                f"({story_points} pts, Sprint {story_sprint_num}) → {story_assignee_name}"
             )
 
             # Create Sub-tasks under this Story

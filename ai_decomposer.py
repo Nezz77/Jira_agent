@@ -106,12 +106,63 @@ def _validate_backlog_schema(backlog: Any) -> list[dict]:
             if not isinstance(story["tasks"], list):
                 raise ValueError(f"{s_prefix}: 'tasks' must be a list.")
 
+            # Sprint field is optional (defaults to 1 if absent)
+            sprint = story.get("sprint", 1)
+            if not isinstance(sprint, int):
+                raise ValueError(f"{s_prefix}: 'sprint' must be an integer, got {type(sprint).__name__}.")
+
             # ── Tasks ─────────────────────────────────────────────────────
             for task_idx, task in enumerate(story["tasks"]):
                 t_prefix = f"{s_prefix}.tasks[{task_idx}]"
                 for req in ("title", "description", "assignee"):
                     if req not in task:
                         raise ValueError(f"{t_prefix}: missing required field '{req}'.")
+
+    return backlog
+
+
+def _fix_sprint_numbers(backlog: list[dict], num_sprints: int) -> list[dict]:
+    """
+    Clamp any sprint values that are out of range [1, num_sprints].
+    Also fills in a default of 1 if the field is missing.
+    Distributes stories round-robin across sprints if num_sprints > 1 and
+    all sprints ended up as 1 (Gemini ignored the instruction).
+    """
+    if num_sprints <= 1:
+        # Single sprint — just ensure the field exists
+        for item in backlog:
+            for story in item.get("stories", []):
+                story["sprint"] = 1
+        return backlog
+
+    sprint_counter = 1
+    all_same = True
+    first_sprint = None
+
+    for item in backlog:
+        for story in item.get("stories", []):
+            raw = story.get("sprint", 1)
+            try:
+                val = int(raw)
+            except (TypeError, ValueError):
+                val = 1
+            val = max(1, min(num_sprints, val))
+            story["sprint"] = val
+            if first_sprint is None:
+                first_sprint = val
+            elif val != first_sprint:
+                all_same = False
+
+    # If Gemini assigned every story to the same sprint, override with round-robin
+    if all_same and num_sprints > 1:
+        logger.warning(
+            "All stories assigned to sprint %s — enforcing round-robin distribution.",
+            first_sprint,
+        )
+        for item in backlog:
+            for story in item.get("stories", []):
+                story["sprint"] = sprint_counter
+                sprint_counter = (sprint_counter % num_sprints) + 1
 
     return backlog
 
@@ -182,9 +233,13 @@ def _call_gemini_for_backlog(
     model_name: str,
     modules: list[str],
     members: list[str],
+    num_sprints: int = 1,
 ) -> str:
     """
     Call Gemini to produce the full Agile backlog JSON string.
+
+    Args:
+        num_sprints: Number of sprints to distribute stories across.
 
     Returns:
         Raw text response from Gemini.
@@ -192,11 +247,12 @@ def _call_gemini_for_backlog(
     prompt = AGILE_DECOMPOSITION_PROMPT.format(
         modules_list=json.dumps(modules, ensure_ascii=False),
         members_list=", ".join(members) if members else "Team Member A, Team Member B",
+        num_sprints=num_sprints,
     )
 
     logger.info(
-        "Calling Gemini for Agile decomposition (%d modules, %d members)…",
-        len(modules), len(members),
+        "Calling Gemini for Agile decomposition (%d modules, %d members, %d sprints)…",
+        len(modules), len(members), num_sprints,
     )
 
     response = client.models.generate_content(
@@ -220,6 +276,7 @@ def decompose_to_agile_backlog(
     gemini_api_key: str,
     gemini_model_name: str = "gemini-3.6-flash",
     backlog_output_path: str = "backlog.json",
+    num_sprints: int = 1,
 ) -> list[dict]:
     """
     Full Stage 2 pipeline: call Gemini → parse JSON → validate → fix → enforce distribution.
@@ -230,6 +287,7 @@ def decompose_to_agile_backlog(
         gemini_api_key:      Google AI Studio API key.
         gemini_model_name:   Gemini model name.
         backlog_output_path: Optional path to save the raw backlog JSON.
+        num_sprints:         Number of sprints to distribute stories across.
 
     Returns:
         Validated, distribution-corrected Agile backlog as a list of dicts.
@@ -244,7 +302,7 @@ def decompose_to_agile_backlog(
 
     # ── Call Gemini ──────────────────────────────────────────────────────────
     with console.status("[bold green]Generating Agile backlog (this may take 30–60 s)…"):
-        raw_text = _call_gemini_for_backlog(client, gemini_model_name, modules, members)
+        raw_text = _call_gemini_for_backlog(client, gemini_model_name, modules, members, num_sprints)
 
     console.print("  [green]✓[/green] Gemini returned a response.")
 
@@ -265,6 +323,12 @@ def decompose_to_agile_backlog(
     # ── Post-processing ──────────────────────────────────────────────────────
     backlog = _fix_story_points(backlog)
     console.print("  [green]✓[/green] Story points normalised to Fibonacci scale.")
+
+    backlog = _fix_sprint_numbers(backlog, num_sprints)
+    console.print(
+        f"  [green]✓[/green] Stories distributed across "
+        f"[bold]{num_sprints}[/bold] sprint(s)."
+    )
 
     if members:
         backlog = _enforce_round_robin_assignees(backlog, members)

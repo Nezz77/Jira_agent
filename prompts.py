@@ -45,6 +45,8 @@ Team members who will work on this project (distribute work evenly — treat eac
 person as a full-stack developer capable of working on any part of the system):
 {members_list}
 
+This project will be delivered in {num_sprints} sprint(s).
+
 Your task: produce a **complete Agile backlog** for the entire project.
 
 ━━━ OUTPUT SCHEMA ━━━
@@ -63,6 +65,7 @@ The array must follow this EXACT schema:
         "description": "<Detailed acceptance criteria and context>",
         "story_points": <Fibonacci number: 1, 2, 3, 5, 8, or 13>,
         "assignee": "<One team member name from the list above>",
+        "sprint": <integer between 1 and {num_sprints}>,
         "tasks": [
           {{
             "title": "<Concrete engineering sub-task>",
@@ -86,7 +89,10 @@ The array must follow this EXACT schema:
 6. Use proper Agile "As a / I want / So that" format for story titles.
 7. Sub-task titles must be concrete engineering actions
    (e.g. "Implement JWT refresh token endpoint", "Write Cypress E2E login tests").
-8. The JSON must be valid and parseable — no trailing commas, no comments.
+8. Distribute stories across sprints evenly. Earlier epics belong to earlier
+   sprints. Spread the workload so no sprint has significantly more story points
+   than another. Sprint numbers must be integers from 1 to {num_sprints}.
+9. The JSON must be valid and parseable — no trailing commas, no comments.
 
 Now produce the full Agile backlog JSON.
 """.strip()
