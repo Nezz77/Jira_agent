@@ -1,0 +1,21 @@
+# ─────────────────────────────────────────────
+#  Jira Agile Agent — Python Dependencies
+# ─────────────────────────────────────────────
+
+# Google Gemini AI SDK (new unified SDK — replaces google-generativeai)
+google-genai>=0.8.0
+
+# Jira REST API client
+jira>=3.8.0
+
+# Environment variable management
+python-dotenv>=1.0.0
+
+# HTTP retrying & resilience (used internally by utils.py)
+tenacity>=8.2.0
+
+# Rich terminal output (progress bars, tables, formatted logs)
+rich>=13.7.0
+
+# For PDF validation before upload
+pypdf>=4.2.0

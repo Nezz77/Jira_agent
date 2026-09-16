@@ -1,0 +1,46 @@
+# ── Credentials & Secrets ────────────────────────────────
+.env
+*.pem
+*.key
+secrets.json
+
+# ── Python Virtual Environment ───────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Python Cache ─────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# ── Generated Runtime Outputs ─────────────────────────────
+# These are produced at runtime and should not be tracked.
+agent.log
+backlog.json
+modules.txt
+*.log
+
+# ── Distribution / Build ─────────────────────────────────
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# ── Testing ───────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ── IDEs ─────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# ── Misc ─────────────────────────────────────────────────
+task.md
