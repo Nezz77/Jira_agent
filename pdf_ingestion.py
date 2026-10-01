@@ -24,15 +24,24 @@ from google.genai import types
 from pypdf import PdfReader
 
 from prompts import MODULE_EXTRACTION_PROMPT
-from utils import console, extract_json, make_retry_decorator, print_banner
+from utils import (
+    call_with_model_fallback,
+    console,
+    extract_json,
+    is_overload_error,
+    make_retry_decorator,
+    print_banner,
+)
 
 logger = logging.getLogger("jira_agent.pdf")
 
-# ── Gemini retry decorator for transient API errors ──────────────────────────
+# ── Gemini retry decorator for non-overload transient errors ──────────────────
+# 503/429 overload errors are handled by call_with_model_fallback; this
+# decorator only fires on other transient failures (network drops, etc.).
 _gemini_retry = make_retry_decorator(
-    max_attempts=4,
+    max_attempts=3,
     min_wait=5.0,
-    max_wait=90.0,
+    max_wait=60.0,
     exceptions=(Exception,),
 )
 
@@ -150,7 +159,7 @@ def _call_gemini_for_modules(
         contents=[gemini_file, MODULE_EXTRACTION_PROMPT],
         config=types.GenerateContentConfig(
             temperature=0.2,
-            max_output_tokens=1024,
+            max_output_tokens=8192,
         ),
     )
 
@@ -202,6 +211,7 @@ def ingest_pdf(
     gemini_api_key: str,
     gemini_model_name: str = "gemini-3.6-flash",
     modules_output_path: str = "modules.txt",
+    extra_api_keys: list[str] | None = None,
 ) -> list[str]:
     """
     Full Stage 1 pipeline: validate → upload → extract modules → write file.
@@ -236,8 +246,20 @@ def ingest_pdf(
     console.print(f"  [green]✓[/green] File uploaded — name: [dim]{gemini_file.name}[/dim]")
 
     # ── Extract modules via Gemini ───────────────────────────────────────────
+    console.print(
+        f"  [dim]Primary model: [bold]{gemini_model_name}[/bold] "
+        "(auto-fallback enabled on 503/429)…[/dim]"
+    )
     with console.status("[bold green]Asking Gemini to identify project modules…"):
-        modules = _call_gemini_for_modules(client, gemini_file, gemini_model_name)
+        modules = call_with_model_fallback(
+            _call_gemini_for_modules,
+            gemini_model_name,
+            client,
+            gemini_file,
+            gemini_model_name,
+            model_arg_index=2,
+            extra_api_keys=extra_api_keys,
+        )
 
     console.print(f"  [green]✓[/green] Extracted [bold]{len(modules)}[/bold] modules:")
     for m in modules:

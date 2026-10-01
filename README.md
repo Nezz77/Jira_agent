@@ -119,52 +119,20 @@ JIRA_PROJECT_NAME=My Project
 
 ## 🚀 Usage
 
-> **macOS / Linux**: Use `.venv/bin/python` (or activate the venv first with `source .venv/bin/activate` then use `python`).
-
 ### Basic run (all three stages)
 
 ```bash
-.venv/bin/python agent.py \
+python agent.py \
   --pdf path/to/proposal.pdf \
   --members "Alice,Bob,Carol,Diana"
-```
-
-### With sprint planning
-
-```bash
-# Create 3 sprints — stories distributed evenly across them
-.venv/bin/python agent.py \
-  --pdf path/to/proposal.pdf \
-  --members "Alice,Bob,Carol" \
-  --sprints 3
-```
-
-### Interactive member input (no --members flag)
-
-If you omit `--members`, the agent will prompt you interactively:
-
-```bash
-.venv/bin/python agent.py --pdf path/to/proposal.pdf --sprints 2
-```
-```
-  No team members specified.
-  Enter team member names one per line.
-  Press Enter on a blank line when done.
-
-  Member 1: Alice
-  Member 2: Bob
-  Member 3:          ← blank line = done
-
-  ✓ Team members: Alice, Bob (2 members)
 ```
 
 ### Full options
 
 ```bash
-.venv/bin/python agent.py \
+python agent.py \
   --pdf path/to/proposal.pdf \
   --members "Alice,Bob,Carol" \
-  --sprints 3 \
   --model gemini-3.6-flash \
   --project-key MYPROJ \
   --project-name "My Awesome Project" \
@@ -175,10 +143,10 @@ If you omit `--members`, the agent will prompt you interactively:
 
 ```bash
 # Skip Stage 1 — reuse existing modules.txt
-.venv/bin/python agent.py --pdf proposal.pdf --members "Alice,Bob" --sprints 2 --skip-stage 1
+python agent.py --pdf proposal.pdf --members "Alice,Bob" --skip-stage 1
 
-# Skip Stages 1 & 2 — reuse existing backlog.json, push straight to Jira
-.venv/bin/python agent.py --pdf proposal.pdf --members "Alice,Bob" --skip-stage 2
+# Skip Stages 1 & 2 — reuse existing backlog.json
+python agent.py --pdf proposal.pdf --members "Alice,Bob" --skip-stage 2
 ```
 
 ### All CLI flags
@@ -186,8 +154,7 @@ If you omit `--members`, the agent will prompt you interactively:
 | Flag | Default | Description |
 |---|---|---|
 | `--pdf PATH` | *(required)* | Path to the project proposal PDF |
-| `--members "A,B,C"` | *(interactive prompt)* | Comma-separated team member names or emails. If omitted, prompted interactively |
-| `--sprints N` | `1` | Number of sprints to create on the Jira board. Stories are distributed evenly |
+| `--members "A,B,C"` | *(none)* | Comma-separated team member names or emails |
 | `--model MODEL` | `gemini-3.6-flash` | Gemini model name (overrides `GEMINI_MODEL` in `.env`) |
 | `--project-key KEY` | from `.env` | Jira project key, e.g. `PROJ` |
 | `--project-name NAME` | from `.env` | Human-readable project name (for new projects) |
@@ -272,5 +239,5 @@ MIT License — see [LICENSE](LICENSE) for details.
 ---
 
 <div align="center">
-Built with ❤️ using <a href="https://ai.google.dev">Gemini AI</a> + <a href="https://www.atlassian.com/software/jira">Jira</a>
+Built by FutureTech <a href="https://ai.google.dev">Gemini AI</a> + <a href="https://www.atlassian.com/software/jira">Jira</a>
 </div>

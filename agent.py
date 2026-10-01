@@ -24,7 +24,6 @@ Run `python agent.py --help` for the full option list.
 from __future__ import annotations
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  (Easter egg removed for sanity)
 # ══════════════════════════════════════════════════════════════════════════════
 
 import argparse
@@ -207,6 +206,18 @@ def load_and_validate_env(args: argparse.Namespace) -> dict:
         "jira_project_name": require("JIRA_PROJECT_NAME", args.project_name),
     }
 
+    # Load extra API keys from GEMINI_API_KEYS_EXTRA (comma-separated).
+    # These are rotated through for every model when the primary key hits quota.
+    extra_raw = os.getenv("GEMINI_API_KEYS_EXTRA", "").strip()
+    config["gemini_extra_keys"] = [
+        k.strip() for k in extra_raw.split(",") if k.strip()
+    ]
+    if config["gemini_extra_keys"]:
+        console.print(
+            f"  [dim]Extra API keys loaded: [bold]{len(config['gemini_extra_keys'])}[/bold] "
+            "(will rotate on quota exhaustion)[/dim]"
+        )
+
     return config
 
 
@@ -314,6 +325,10 @@ def main() -> None:
     args = parse_args()
 
     # ── Welcome banner ────────────────────────────────────────────────────────
+    ascii_art = __doc__.split("agent.py")[0].strip() if __doc__ else ""
+    if ascii_art:
+        console.print(f"[bold bright_blue]{ascii_art}[/bold bright_blue]\n")
+
     console.print(
         Panel.fit(
             "[bold bright_blue]🚀 Jira Agile Agent[/bold bright_blue]\n"
@@ -396,6 +411,7 @@ def main() -> None:
                 gemini_model_name=config["gemini_model"],
                 backlog_output_path=args.backlog_out,
                 num_sprints=num_sprints,
+                extra_api_keys=config["gemini_extra_keys"],
             )
         except ValueError as exc:
             fatal(f"Agile decomposition failed (JSON parse error): {exc}")

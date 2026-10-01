@@ -6,6 +6,7 @@ Shared utilities for the Jira Agile Agent:
   - Exponential-backoff retry decorator (via tenacity)
   - Robust JSON extraction from Gemini responses
   - Pretty console output helpers (via rich)
+  - Model-fallback helper for Gemini 503/429 overload errors
 """
 
 from __future__ import annotations
@@ -14,8 +15,9 @@ import json
 import logging
 import re
 import sys
+import time
 from logging.handlers import RotatingFileHandler
-from typing import Any, Optional
+from typing import Any, Callable, Optional, TypeVar
 
 from rich.console import Console
 from rich.logging import RichHandler
@@ -31,6 +33,159 @@ from tenacity import (
 
 # ── Module-level rich console (shared across the project) ────────────────────
 console = Console()
+
+# ── Model fallback chain ─────────────────────────────────────────────────────
+# When the primary model is overloaded (503/429) or deprecated (404),
+# the agent tries each model in this list in order before raising a fatal error.
+_FALLBACK_MODELS: list[str] = [
+    "gemini-3.8-flash",
+    "gemini-3.6-flash",
+    "gemini-2.5-flash-preview-04-17",
+    "gemini-2.0-flash-lite",
+]
+
+# Hardcoded backup API keys (lowest priority — prefer GEMINI_API_KEYS_EXTRA in .env).
+_FALLBACK_API_KEYS: list[str] = []
+
+# Seconds to wait before retrying the *same* model/key on a transient overload.
+_OVERLOAD_WAIT_SECONDS = 30
+_OVERLOAD_MAX_RETRIES = 2   # retries per model/key before switching
+
+
+def is_overload_error(exc: BaseException) -> bool:
+    """
+    Return True if the exception represents a transient service overload
+    (HTTP 503 UNAVAILABLE or 429 RESOURCE_EXHAUSTED / RATE_LIMIT_EXCEEDED).
+    This signals: wait and retry or switch key, but the model itself is valid.
+    """
+    msg = str(exc).upper()
+    codes = ("503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED",
+             "RATE_LIMIT", "QUOTA", "HIGH DEMAND")
+    return any(c in msg for c in codes)
+
+
+def is_skip_model_error(exc: BaseException) -> bool:
+    """
+    Return True if the exception means this model should be skipped entirely
+    (e.g. 404 NOT_FOUND because the model is deprecated or unavailable).
+    In this case we move straight to the next model without waiting.
+    """
+    msg = str(exc).upper()
+    return "404" in msg or "NOT_FOUND" in msg or "NO LONGER AVAILABLE" in msg
+
+
+F = TypeVar("F")
+
+
+def call_with_model_fallback(
+    fn: Callable[..., F],
+    primary_model: str,
+    *args: Any,
+    model_arg_index: int = 1,
+    extra_api_keys: list[str] | None = None,
+    **kwargs: Any,
+) -> F:
+    """
+    Call *fn* with *primary_model*. Handles three error classes:
+
+    - **503 / 429 overload**: wait ``_OVERLOAD_WAIT_SECONDS``, retry same
+      model+key up to ``_OVERLOAD_MAX_RETRIES`` times, then rotate to next key
+      for the same model, then next model.
+    - **404 deprecated model**: skip immediately to next model (no wait).
+    - **other errors**: re-raise immediately (not a quota/availability issue).
+
+    Rotation order (per model, try every key first)::
+
+      gemini-3.6-flash + key1 → gemini-3.6-flash + key2
+        → gemini-3.8-flash + key1 → gemini-3.8-flash + key2 → …
+    """
+    _log = logging.getLogger("jira_agent.fallback")
+
+    models_to_try = [primary_model] + [
+        m for m in _FALLBACK_MODELS if m != primary_model
+    ]
+
+    # Build client list: primary first, then extras from .env, then hardcoded.
+    primary_client = args[0]
+    all_keys: list[str] = []
+    seen: set[str] = set()
+    for key in (extra_api_keys or []) + _FALLBACK_API_KEYS:
+        if key and key not in seen:
+            all_keys.append(key)
+            seen.add(key)
+
+    extra_clients = []
+    for key in all_keys:
+        try:
+            extra_clients.append(type(primary_client)(api_key=key))
+        except Exception:
+            pass
+
+    clients_to_try = [primary_client] + extra_clients
+
+    last_exc: BaseException | None = None
+
+    for model in models_to_try:
+        model_skipped = False
+        for client_idx, client in enumerate(clients_to_try):
+            if model_skipped:
+                break  # 404 on this model — don't try other keys, skip model
+
+            args_list = list(args)
+            args_list[0] = client
+            if model_arg_index < len(args_list):
+                args_list[model_arg_index] = model
+            else:
+                args_list.append(model)
+            current_args = tuple(args_list)
+            key_label = f"key{client_idx + 1}"
+
+            for attempt in range(1, _OVERLOAD_MAX_RETRIES + 1):
+                try:
+                    return fn(*current_args, **kwargs)
+                except BaseException as exc:
+                    last_exc = exc
+
+                    if is_skip_model_error(exc):
+                        # Model deprecated/unavailable — skip to next model
+                        _log.warning(
+                            "Model '%s' unavailable (404). Skipping to next model.", model
+                        )
+                        console.print(
+                            f"  [red]✗[/red]  Model [bold]{model}[/bold] is deprecated/unavailable. "
+                            "Skipping to next model…"
+                        )
+                        model_skipped = True
+                        break  # break attempt loop; outer loop will break key loop
+
+                    if not is_overload_error(exc):
+                        # Unknown error — re-raise immediately
+                        raise
+
+                    if attempt < _OVERLOAD_MAX_RETRIES:
+                        wait = _OVERLOAD_WAIT_SECONDS * attempt
+                        _log.warning(
+                            "[%s/%s] overloaded (attempt %d/%d). Waiting %ds…",
+                            model, key_label, attempt, _OVERLOAD_MAX_RETRIES, wait,
+                        )
+                        console.print(
+                            f"  [yellow]⚠[/yellow]  [bold]{model}[/bold] ({key_label}) "
+                            f"high demand. Retrying in [bold]{wait}s[/bold]…"
+                        )
+                        time.sleep(wait)
+                    else:
+                        _log.warning(
+                            "[%s/%s] quota exhausted after %d retries. Trying next key/model…",
+                            model, key_label, _OVERLOAD_MAX_RETRIES,
+                        )
+                        console.print(
+                            f"  [yellow]⚠[/yellow]  [bold]{model}[/bold] ({key_label}) quota exhausted. "
+                            "Trying next key/model…"
+                        )
+
+    # All models + keys failed
+    assert last_exc is not None
+    raise last_exc
 
 
 # ── Logging Setup ────────────────────────────────────────────────────────────
@@ -84,6 +239,10 @@ def make_retry_decorator(
     """
     Factory that returns a tenacity @retry decorator with exponential backoff.
 
+    Overload/rate-limit errors (503, 429) are handled separately by
+    `call_with_model_fallback`; this decorator covers other transient failures
+    (network timeouts, 5xx errors that are *not* overloads, etc.).
+
     Usage:
         @make_retry_decorator(max_attempts=3, exceptions=(ResourceExhausted,))
         def my_api_call():
@@ -95,13 +254,13 @@ def make_retry_decorator(
         max_wait:     Maximum seconds to wait between retries (caps backoff).
         exceptions:   Tuple of exception types that should trigger a retry.
     """
-    logger = logging.getLogger("jira_agent.retry")
+    _log = logging.getLogger("jira_agent.retry")
     return retry(
         reraise=True,
         stop=stop_after_attempt(max_attempts),
         wait=wait_exponential(multiplier=1, min=min_wait, max=max_wait),
         retry=retry_if_exception_type(exceptions),
-        before_sleep=before_sleep_log(logger, logging.WARNING),
+        before_sleep=before_sleep_log(_log, logging.WARNING),
     )
 
 

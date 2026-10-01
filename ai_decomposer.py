@@ -40,15 +40,24 @@ from google import genai
 from google.genai import types
 
 from prompts import AGILE_DECOMPOSITION_PROMPT
-from utils import console, extract_json, make_retry_decorator, print_banner
+from utils import (
+    call_with_model_fallback,
+    console,
+    extract_json,
+    is_overload_error,
+    make_retry_decorator,
+    print_banner,
+)
 
 logger = logging.getLogger("jira_agent.decomposer")
 
-# ── Gemini retry for rate limits / transient errors ──────────────────────────
+# ── Gemini retry for non-overload transient errors ────────────────────────────
+# 503/429 overload errors are handled by call_with_model_fallback in
+# decompose_to_agile_backlog; this decorator handles other transient failures.
 _gemini_retry = make_retry_decorator(
-    max_attempts=4,
-    min_wait=10.0,
-    max_wait=120.0,
+    max_attempts=3,
+    min_wait=5.0,
+    max_wait=60.0,
     exceptions=(Exception,),
 )
 
@@ -251,8 +260,8 @@ def _call_gemini_for_backlog(
     )
 
     logger.info(
-        "Calling Gemini for Agile decomposition (%d modules, %d members, %d sprints)…",
-        len(modules), len(members), num_sprints,
+        "Calling Gemini model '%s' for Agile decomposition (%d modules, %d members, %d sprints)…",
+        model_name, len(modules), len(members), num_sprints,
     )
 
     response = client.models.generate_content(
@@ -260,7 +269,7 @@ def _call_gemini_for_backlog(
         contents=prompt,
         config=types.GenerateContentConfig(
             temperature=0.3,
-            max_output_tokens=16000,
+            max_output_tokens=65536,  # raised: complex backlogs can exceed 16k tokens
             response_mime_type="application/json",
         ),
     )
@@ -277,6 +286,7 @@ def decompose_to_agile_backlog(
     gemini_model_name: str = "gemini-3.6-flash",
     backlog_output_path: str = "backlog.json",
     num_sprints: int = 1,
+    extra_api_keys: list[str] | None = None,
 ) -> list[dict]:
     """
     Full Stage 2 pipeline: call Gemini → parse JSON → validate → fix → enforce distribution.
@@ -300,9 +310,23 @@ def decompose_to_agile_backlog(
     # ── Create Gemini client ─────────────────────────────────────────────────
     client = genai.Client(api_key=gemini_api_key)
 
-    # ── Call Gemini ──────────────────────────────────────────────────────────
+    # ── Call Gemini (with automatic model fallback on 503/429) ───────────────────
+    console.print(
+        f"  [dim]Primary model: [bold]{gemini_model_name}[/bold] "
+        "(auto-fallback enabled on 503/429)…[/dim]"
+    )
     with console.status("[bold green]Generating Agile backlog (this may take 30–60 s)…"):
-        raw_text = _call_gemini_for_backlog(client, gemini_model_name, modules, members, num_sprints)
+        raw_text = call_with_model_fallback(
+            _call_gemini_for_backlog,
+            gemini_model_name,
+            client,
+            gemini_model_name,
+            modules,
+            members,
+            num_sprints,
+            model_arg_index=1,
+            extra_api_keys=extra_api_keys,
+        )
 
     console.print("  [green]✓[/green] Gemini returned a response.")
 
