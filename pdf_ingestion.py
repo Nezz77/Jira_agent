@@ -21,6 +21,8 @@ from typing import Any
 
 from google import genai
 from google.genai import types
+import openai
+import pypdf
 from pypdf import PdfReader
 
 from prompts import MODULE_EXTRACTION_PROMPT
@@ -137,45 +139,52 @@ def _upload_pdf_to_gemini(client: genai.Client, path: Path) -> Any:
 
 @_gemini_retry
 def _call_gemini_for_modules(
-    client: genai.Client,
-    gemini_file: Any,
+    client: Any,
+    pdf_path_obj: Path,
     model_name: str,
 ) -> list[str]:
     """
-    Ask Gemini to read the uploaded PDF and return the list of project modules.
-
-    Args:
-        client:      Authenticated genai.Client instance.
-        gemini_file: The ACTIVE Gemini file object.
-        model_name:  Gemini model name to use.
-
-    Returns:
-        A list of module name strings.
+    Ask Gemini or DeepSeek to read the uploaded PDF and return the list of project modules.
     """
-    logger.info("Calling Gemini to extract modules from PDF…")
+    logger.info("Calling LLM to extract modules from PDF…")
 
-    response = client.models.generate_content(
-        model=model_name,
-        contents=[gemini_file, MODULE_EXTRACTION_PROMPT],
-        config=types.GenerateContentConfig(
+    if isinstance(client, openai.OpenAI):
+        logger.info("Extracting text locally for DeepSeek...")
+        reader = pypdf.PdfReader(pdf_path_obj)
+        text = "\n".join(page.extract_text() for page in reader.pages)
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=[{"role": "user", "content": text + "\n\n" + MODULE_EXTRACTION_PROMPT}],
             temperature=0.2,
-            max_output_tokens=8192,
-        ),
-    )
+        )
+        raw_text = response.choices[0].message.content
+    else:
+        # Upload to Gemini File API 
+        console.print("[dim]  Uploading PDF to Gemini File API…[/dim]")
+        gemini_file = _upload_pdf_to_gemini(client, pdf_path_obj)
+        
+        response = client.models.generate_content(
+            model=model_name,
+            contents=[gemini_file, MODULE_EXTRACTION_PROMPT],
+            config=types.GenerateContentConfig(
+                temperature=0.2,
+                max_output_tokens=8192,
+            ),
+        )
+        raw_text = response.text
 
-    raw_text = response.text
-    logger.debug("Raw Gemini module response:\n%s", raw_text)
+    logger.debug("Raw module response:\n%s", raw_text)
 
     modules: list[str] = extract_json(raw_text)
 
     if not isinstance(modules, list) or not all(isinstance(m, str) for m in modules):
         raise ValueError(
-            "Gemini did not return a JSON array of strings for modules. "
+            "LLM did not return a JSON array of strings for modules. "
             f"Got: {type(modules)} — {str(modules)[:200]}"
         )
 
     if len(modules) == 0:
-        raise ValueError("Gemini returned an empty module list.")
+        raise ValueError("LLM returned an empty module list.")
 
     # Normalise: strip whitespace, remove empty strings
     modules = [m.strip() for m in modules if m.strip()]
@@ -212,6 +221,7 @@ def ingest_pdf(
     gemini_model_name: str = "gemini-3.6-flash",
     modules_output_path: str = "modules.txt",
     extra_api_keys: list[str] | None = None,
+    deepseek_api_key: str | None = None,
 ) -> list[str]:
     """
     Full Stage 1 pipeline: validate → upload → extract modules → write file.
@@ -239,26 +249,21 @@ def ingest_pdf(
 
     console.print(f"  [green]✓[/green] PDF validated: [bold]{pdf_path_obj.name}[/bold]")
 
-    # ── Upload to Gemini File API ────────────────────────────────────────────
-    with console.status("[bold green]Uploading to Gemini File API…"):
-        gemini_file = _upload_pdf_to_gemini(client, pdf_path_obj)
-
-    console.print(f"  [green]✓[/green] File uploaded — name: [dim]{gemini_file.name}[/dim]")
-
-    # ── Extract modules via Gemini ───────────────────────────────────────────
+    # ── Extract modules via LLM ───────────────────────────────────────────
     console.print(
         f"  [dim]Primary model: [bold]{gemini_model_name}[/bold] "
         "(auto-fallback enabled on 503/429)…[/dim]"
     )
-    with console.status("[bold green]Asking Gemini to identify project modules…"):
+    with console.status("[bold green]Asking LLM to identify project modules…"):
         modules = call_with_model_fallback(
             _call_gemini_for_modules,
             gemini_model_name,
             client,
-            gemini_file,
+            pdf_path_obj,
             gemini_model_name,
             model_arg_index=2,
             extra_api_keys=extra_api_keys,
+            deepseek_api_key=deepseek_api_key,
         )
 
     console.print(f"  [green]✓[/green] Extracted [bold]{len(modules)}[/bold] modules:")

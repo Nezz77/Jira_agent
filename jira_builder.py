@@ -19,6 +19,7 @@ Stage 3 of the Jira Agile Agent pipeline:
 
 from __future__ import annotations
 
+import base64
 import logging
 import time
 from typing import Optional
@@ -90,6 +91,137 @@ def create_jira_client(
 
 # ── Project Management ────────────────────────────────────────────────────────
 
+def _create_project_via_rest(
+    jira: JIRA,
+    project_key: str,
+    project_name: str,
+) -> None:
+    """
+    Create a Scrum software project by calling the Atlassian REST API directly.
+
+    The jira-python wrapper's ``create_project()`` has inconsistent kwargs across
+    versions and cloud vs. server.  Bypassing it with a raw POST ensures we send
+    exactly the payload the API expects, including the mandatory ``leadAccountId``.
+
+    Raises:
+        RuntimeError: If the API returns a non-2xx response and the project
+                      cannot be accessed under the requested key.
+    """
+    server = jira._options["server"].rstrip("/")
+
+    # ── Extract credentials ───────────────────────────────────────────────────
+    email = ""
+    token = ""
+
+    basic_auth = jira._options.get("basic_auth")
+    if isinstance(basic_auth, tuple) and len(basic_auth) == 2:
+        email, token = str(basic_auth[0]), str(basic_auth[1])
+
+    if not email or not token:
+        auth = getattr(jira._session, "auth", None)
+        if auth and hasattr(auth, "__iter__"):
+            try:
+                creds = tuple(auth)
+                email, token = str(creds[0]), str(creds[1])
+            except Exception:
+                pass
+
+    if not email or not token:
+        raise RuntimeError(
+            "Could not extract Jira credentials from the authenticated client. "
+            "Please ensure JIRA_EMAIL and JIRA_API_TOKEN are set in your .env."
+        )
+
+    creds_b64 = base64.b64encode(f"{email}:{token}".encode()).decode()
+    headers = {
+        "Authorization": f"Basic {creds_b64}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
+    # ── Get current user's accountId — required by Jira Cloud ────────────────
+    lead_account_id: str | None = None
+    try:
+        me = jira.myself()
+        lead_account_id = me.get("accountId")
+    except Exception:
+        pass
+
+    # ── Build & send the request ──────────────────────────────────────────────
+    payload: dict = {
+        "key": project_key,
+        "name": project_name,
+        "projectTypeKey": "software",
+        "projectTemplateKey": "com.pyxis.greenhopper.jira:gh-scrum-template",
+        "description": "Project auto-created by Jira Agile Agent",
+    }
+    if lead_account_id:
+        payload["leadAccountId"] = lead_account_id
+
+    url = f"{server}/rest/api/3/project"
+    logger.info("Creating Jira project '%s' via REST API…", project_key)
+    resp = requests.post(url, json=payload, headers=headers, timeout=30)
+
+    if resp.status_code in (200, 201):
+        logger.info("Project '%s' created successfully.", project_key)
+        return
+
+    # ── Parse the error body ──────────────────────────────────────────────────
+    all_msgs: list[str] = []
+    try:
+        body = resp.json()
+        errors = body.get("errors", {})
+        messages = body.get("errorMessages", [])
+        all_msgs = list(errors.values()) + messages
+        detail = "; ".join(all_msgs) or resp.text
+    except Exception:
+        detail = resp.text or f"HTTP {resp.status_code}"
+
+    # ── Handle "key already in use by another project" gracefully ─────────────
+    # Jira returns 400 "Project 'X' uses this project key" when the key exists.
+    # If we can still GET the project, use it rather than failing.
+    key_taken = any(
+        "uses this project key" in m.lower() or "project key" in m.lower()
+        for m in all_msgs
+    )
+    name_taken = any("project with that name already exists" in m.lower() for m in all_msgs)
+
+    if key_taken:
+        try:
+            existing = jira.project(project_key)
+            logger.warning(
+                "Key '%s' is already used by project '%s'. "
+                "Will push issues into that project.",
+                project_key, existing.name,
+            )
+            console.print(
+                f"  [yellow]⚠[/yellow] Key [bold]{project_key}[/bold] is already used by "
+                f"project '[bold]{existing.name}[/bold]'. Pushing issues there instead."
+            )
+            return  # treat as success — project exists and is reachable
+        except Exception:
+            pass  # fall through to raise the full error
+
+    # Build a helpful, actionable error message
+    if key_taken and name_taken:
+        hint = (
+            f"The key '{project_key}' and/or the project name are already taken by another project.\n"
+            f"  ➜ Option 1: Delete or rename the conflicting Jira project at:\n"
+            f"              https://nesanduhm.atlassian.net/jira/software/projects\n"
+            f"  ➜ Option 2: Change JIRA_PROJECT_KEY in your .env to a new unique key (e.g. SLK).\n"
+            f"  ➜ Option 3: Change JIRA_PROJECT_NAME in your .env to a unique name."
+        )
+    else:
+        hint = (
+            "Ensure your API token has 'Administer Jira' permission, or create the project manually."
+        )
+
+    raise RuntimeError(
+        f"Could not create Jira project '{project_key}' (HTTP {resp.status_code}): {detail}\n"
+        f"{hint}"
+    )
+
+
 def ensure_project_exists(
     jira: JIRA,
     project_key: str,
@@ -117,20 +249,21 @@ def ensure_project_exists(
                 "Creating a new Scrum project…"
             )
             try:
-                jira.create_project(
-                    key=project_key,
-                    name=project_name,
-                    ptype="software",          # software project type
-                    template_name="Scrum",     # Scrum board template
+                _create_project_via_rest(
+                    jira=jira,
+                    project_key=project_key,
+                    project_name=project_name,
                 )
                 console.print(
                     f"  [green]✓[/green] Project [bold]{project_key}[/bold] created."
                 )
-            except JIRAError as create_exc:
+            except RuntimeError:
+                raise
+            except Exception as create_exc:
                 # Some Jira instances don't allow programmatic project creation
                 # (permission restriction). Surface a clear error message.
                 raise RuntimeError(
-                    f"Could not create Jira project '{project_key}': {create_exc.text}\n"
+                    f"Could not create Jira project '{project_key}': {create_exc}\n"
                     "Ensure your API token has 'Administer Jira' permission, or create "
                     "the project manually and re-run."
                 ) from create_exc

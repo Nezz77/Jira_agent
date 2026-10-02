@@ -206,8 +206,7 @@ def load_and_validate_env(args: argparse.Namespace) -> dict:
         "jira_project_name": require("JIRA_PROJECT_NAME", args.project_name),
     }
 
-    # Load extra API keys from GEMINI_API_KEYS_EXTRA (comma-separated).
-    # These are rotated through for every model when the primary key hits quota.
+    # Load extra Gemini API keys (comma-separated) for quota rotation.
     extra_raw = os.getenv("GEMINI_API_KEYS_EXTRA", "").strip()
     config["gemini_extra_keys"] = [
         k.strip() for k in extra_raw.split(",") if k.strip()
@@ -217,6 +216,11 @@ def load_and_validate_env(args: argparse.Namespace) -> dict:
             f"  [dim]Extra API keys loaded: [bold]{len(config['gemini_extra_keys'])}[/bold] "
             "(will rotate on quota exhaustion)[/dim]"
         )
+
+    # Load DeepSeek key — used as ultimate fallback when all Gemini keys fail.
+    config["deepseek_api_key"] = os.getenv("DEEPSEEK_API_KEY", "").strip() or None
+    if config["deepseek_api_key"]:
+        console.print("  [dim]DeepSeek fallback key loaded.[/dim]")
 
     return config
 
@@ -412,6 +416,7 @@ def main() -> None:
                 backlog_output_path=args.backlog_out,
                 num_sprints=num_sprints,
                 extra_api_keys=config["gemini_extra_keys"],
+                deepseek_api_key=config["deepseek_api_key"],
             )
         except ValueError as exc:
             fatal(f"Agile decomposition failed (JSON parse error): {exc}")

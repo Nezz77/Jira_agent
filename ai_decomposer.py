@@ -287,6 +287,7 @@ def decompose_to_agile_backlog(
     backlog_output_path: str = "backlog.json",
     num_sprints: int = 1,
     extra_api_keys: list[str] | None = None,
+    deepseek_api_key: str | None = None,
 ) -> list[dict]:
     """
     Full Stage 2 pipeline: call Gemini → parse JSON → validate → fix → enforce distribution.
@@ -326,6 +327,7 @@ def decompose_to_agile_backlog(
             num_sprints,
             model_arg_index=1,
             extra_api_keys=extra_api_keys,
+            deepseek_api_key=deepseek_api_key,
         )
 
     console.print("  [green]✓[/green] Gemini returned a response.")

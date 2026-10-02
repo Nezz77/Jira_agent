@@ -19,6 +19,7 @@ import time
 from logging.handlers import RotatingFileHandler
 from typing import Any, Callable, Optional, TypeVar
 
+import openai
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.panel import Panel
@@ -41,7 +42,8 @@ _FALLBACK_MODELS: list[str] = [
     "gemini-3.8-flash",
     "gemini-3.6-flash",
     "gemini-2.5-flash-preview-04-17",
-    "gemini-2.0-flash-lite",
+    "gemini-3.5-flash-lite",
+    "deepseek-chat",
 ]
 
 # Hardcoded backup API keys (lowest priority — prefer GEMINI_API_KEYS_EXTRA in .env).
@@ -83,6 +85,7 @@ def call_with_model_fallback(
     *args: Any,
     model_arg_index: int = 1,
     extra_api_keys: list[str] | None = None,
+    deepseek_api_key: str | None = None,
     **kwargs: Any,
 ) -> F:
     """
@@ -125,9 +128,25 @@ def call_with_model_fallback(
 
     last_exc: BaseException | None = None
 
+    deepseek_client = None
+    if deepseek_api_key:
+        try:
+            deepseek_client = openai.OpenAI(api_key=deepseek_api_key, base_url="https://api.deepseek.com/v1")
+        except Exception:
+            pass
+
     for model in models_to_try:
         model_skipped = False
-        for client_idx, client in enumerate(clients_to_try):
+        
+        # Determine which clients to try for this model
+        if model.startswith("deepseek"):
+            if not deepseek_client:
+                continue # Skip deepseek if no key
+            current_clients = [deepseek_client]
+        else:
+            current_clients = clients_to_try
+            
+        for client_idx, client in enumerate(current_clients):
             if model_skipped:
                 break  # 404 on this model — don't try other keys, skip model
 

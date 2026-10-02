@@ -1,6 +1,7 @@
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────
 #  Jira Agile Agent — Python Dependencies
-# ─────────────────────────────────────────────
+#  Install with: pip install -r requirements.txt
+# ─────────────────────────────────────────────────────────────────
 
 # Google Gemini AI SDK (new unified SDK — replaces google-generativeai)
 google-genai>=0.8.0
@@ -17,5 +18,11 @@ tenacity>=8.2.0
 # Rich terminal output (progress bars, tables, formatted logs)
 rich>=13.7.0
 
-# For PDF validation before upload
+# HTTP client — used for direct Atlassian REST API calls (project creation)
+requests>=2.31.0
+
+# PDF text extraction (local fallback when Gemini File API is unavailable)
 pypdf>=4.2.0
+
+# OpenAI-compatible client — used for DeepSeek fallback
+openai>=1.0.0
