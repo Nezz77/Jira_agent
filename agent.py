@@ -322,6 +322,46 @@ def load_backlog_from_file(path: str) -> list[dict]:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  Board URL Resolution
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _get_board_url(config: dict) -> str:
+    """
+    Look up the Scrum board ID for the project via the Jira Agile API and
+    return the correct board URL.
+
+    Classic company-managed projects: /jira/software/c/projects/{KEY}/boards/{ID}
+    Next-gen (team-managed) projects: /jira/software/projects/{KEY}/boards
+    Falls back to the next-gen URL if the API call fails.
+    """
+    import base64
+    import requests as _requests
+
+    domain = config["jira_domain"]
+    email = config["jira_email"]
+    token = config["jira_api_token"]
+    key = config["jira_project_key"]
+
+    try:
+        creds = base64.b64encode(f"{email}:{token}".encode()).decode()
+        headers = {"Authorization": f"Basic {creds}", "Accept": "application/json"}
+        resp = _requests.get(
+            f"https://{domain}/rest/agile/1.0/board?projectKeyOrId={key}",
+            headers=headers,
+            timeout=10,
+        )
+        if resp.ok:
+            values = resp.json().get("values", [])
+            if values:
+                board_id = values[0]["id"]
+                return f"https://{domain}/jira/software/c/projects/{key}/boards/{board_id}"
+    except Exception:
+        pass  # fall through to default
+
+    return f"https://{domain}/jira/software/projects/{key}/boards"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  Main Orchestrator
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -463,7 +503,7 @@ def main() -> None:
         stories = sum(1 for r in created_issues if r["type"] == "Story")
         tasks  = sum(1 for r in created_issues if r["type"] == "Sub-task")
 
-        jira_url = f"https://{config['jira_domain']}/jira/software/projects/{config['jira_project_key']}/boards"
+        jira_url = _get_board_url(config)
 
         console.print(
             Panel(
