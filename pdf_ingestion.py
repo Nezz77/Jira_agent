@@ -172,6 +172,12 @@ def _call_gemini_for_modules(
             ),
         )
         raw_text = response.text
+        
+        try:
+            client.files.delete(name=gemini_file.name)
+            logger.info("Deleted uploaded file from Gemini File API: %s", gemini_file.name)
+        except Exception as exc:
+            logger.warning("Could not delete Gemini file (non-fatal): %s", exc)
 
     logger.debug("Raw module response:\n%s", raw_text)
 
@@ -275,13 +281,5 @@ def ingest_pdf(
     console.print(
         f"  [green]✓[/green] Module list saved → [bold]{modules_path}[/bold]\n"
     )
-
-    # ── Clean up — delete the file from Gemini's servers ────────────────────
-    try:
-        client.files.delete(name=gemini_file.name)
-        logger.info("Deleted uploaded file from Gemini File API: %s", gemini_file.name)
-    except Exception as exc:
-        # Non-fatal — files auto-expire after 48 h anyway
-        logger.warning("Could not delete Gemini file (non-fatal): %s", exc)
 
     return modules
