@@ -433,7 +433,7 @@ def _create_subtask(
         "project": {"key": project_key},
         "summary": title,
         "description": description,
-        "issuetype": {"name": "Subtask"},
+        "issuetype": {"name": "Sub-task"},
         "parent": {"key": parent_story_key},
     }
 
