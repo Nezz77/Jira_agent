@@ -119,7 +119,18 @@ JIRA_PROJECT_NAME=My Project
 
 ## 🚀 Usage
 
-### Basic run (all three stages)
+### 🖥️ Web GUI (Recommended)
+
+A full-featured web interface is included for an easier experience with live log streaming.
+
+```bash
+python gui.py
+```
+*Then open http://localhost:7860 in your browser.*
+
+### 💻 CLI Usage
+
+#### Basic run (all three stages)
 
 ```bash
 python agent.py \
@@ -127,7 +138,7 @@ python agent.py \
   --members "Alice,Bob,Carol,Diana"
 ```
 
-### Full options
+#### Full options
 
 ```bash
 python agent.py \
@@ -165,6 +176,19 @@ python agent.py --pdf proposal.pdf --members "Alice,Bob" --skip-stage 2
 
 ---
 
+## 👥 Assigning Teammates
+
+For the agent to successfully assign issues to your teammates in Jira, they **must have active Atlassian accounts in your workspace** before you run the script.
+
+1. Go to your Jira User Management page (`https://<yourdomain>.atlassian.net/admin/users`)
+2. Click **Invite users** and enter their email addresses.
+3. **Wait for them to accept the email invitation** and create/log into their accounts.
+4. Once they are "Active" in your workspace, you can enter their names or emails in the agent. The script will automatically resolve their names to Jira `accountIds` and assign the issues.
+
+*(If you run the script before they accept their invites, Jira will default to assigning all issues to the Project Lead).*
+
+---
+
 ## 📁 Project Structure
 
 ```
@@ -197,7 +221,8 @@ Both files can be reused via `--skip-stage` to avoid re-running expensive AI cal
 
 ## 🛡️ Resilience & Reliability
 
-- **Automatic retries** with exponential back-off on all Gemini and Jira API calls
+- **Multi-Model Fallback** — Automatically rotates through multiple Gemini API keys and falls back to Gemini 3.8 Flash, 3.5 Flash Lite, and finally DeepSeek if quotas are exhausted.
+- **Automatic retries** with exponential back-off on all AI and Jira API calls
 - **Rate-limit awareness** — sleeps between Jira write calls to stay within API quotas
 - **Schema validation** — Gemini output is validated against the expected backlog schema before any Jira calls are made
 - **Story point normalisation** — any non-Fibonacci values are clamped to the nearest valid point
@@ -212,8 +237,8 @@ Both files can be reused via `--skip-stage` to avoid re-running expensive AI cal
 |---|---|---|
 | `404 NOT_FOUND` on Gemini | Model name is deprecated | Use `--model gemini-3.6-flash` |
 | `customfield_10011` 400 error | Classic-only Epic Name field | Already fixed — field is omitted |
-| `Specify a valid issue type` | Wrong sub-task type name | Already fixed — uses `Subtask` |
-| `JSON parse error` | Gemini returned malformed JSON | Try `--dry-run` to inspect output; use `gemini-2.5-pro` for higher quality |
+| `Specify a valid issue type` | Wrong sub-task type name | Already fixed — uses `Sub-task` (with hyphen) |
+| `JSON parse error` | Gemini returned malformed JSON | Try `--dry-run` to inspect output; use a better model |
 | `JIRAError 401` | Wrong API token or email | Regenerate token at [Atlassian security settings](https://id.atlassian.com/manage-profile/security/api-tokens) |
 | `JIRAError 403` | Insufficient permissions | Ensure your account has project-admin rights |
 | PDF not found | Wrong path | Use an absolute path or run from the correct directory |
