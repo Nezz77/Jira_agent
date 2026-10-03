@@ -26,3 +26,6 @@ pypdf>=4.2.0
 
 # OpenAI-compatible client — used for DeepSeek fallback
 openai>=1.0.0
+
+# Flask for the web GUI
+Flask>=3.0.0
